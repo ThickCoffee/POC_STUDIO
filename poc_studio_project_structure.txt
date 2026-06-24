@@ -1,0 +1,69 @@
+POC_STUDIO Project Structure
+
+Description:
+POC_STUDIO is a Python-based studio application for map building and weather/pipeline processing. It contains pipeline modules for map and weather processing, a core `studio_app.py`, and an `assets/` folder for map and weather cache data.
+
+Top-level files and folders (snapshot):
+- launch_studio.vbs
+- requirements.txt
+- assets/
+  - cache/
+    - map_data/
+    - weather_data/
+- output/
+  - staging/
+- src/
+  - studio_app.py
+- core/
+  - utils.py
+- pipeline_map/
+  - __init__.py
+  - baker.py
+  - fuels.py
+  - gis_orchestrator.py
+  - osm.py
+  - topo.py
+- pipeline_weather/
+  - __init__.py
+  - baker.py
+  - fwi_math.py
+  - interpolator.py
+  - weather_api.py
+
+Summary of important files:
+- `requirements.txt`: Python dependencies for the project (listed below).
+- `studio_app.py`: main application entrypoint.
+- `pipeline_map/` and `pipeline_weather/`: processing pipelines and utilities.
+
+Dependencies (from `requirements.txt`):
+```text
+# UI Framework
+customtkinter>=5.2.2
+
+# Core Data Math
+numpy>=1.26.0
+pandas>=2.2.0
+matplotlib>=3.8.0
+
+# API Fetching
+requests>=2.31.0
+
+# GIS & Spatial Data (For Map Building)
+rasterio>=1.3.9
+geopandas>=0.14.3
+osmnx>=1.9.1
+shapely>=2.0.3
+```
+
+Repeatable update script (PowerShell): run this from the POC_STUDIO folder to regenerate this file.
+```powershell
+# Generate a tree listing and save to poc_studio_project_structure.txt
+Get-ChildItem -Recurse -Force | Sort-Object FullName | ForEach-Object {
+  $relative = $_.FullName.Replace((Get-Location).Path + '\\','')
+  if ($_.PSIsContainer) { "- $relative/" } else { "- $relative" }
+} | Out-File -Encoding utf8 poc_studio_project_structure.txt
+```
+
+Notes:
+- The `requirements.txt` above was read from the repository and included here for convenience.
+- This file was added without overwriting any existing files.
