@@ -89,23 +89,24 @@ def generate_baseline_environment(params, fuel_map, dst_transform, status_callba
                 window = vrt.window(params['west'], params['south'], params['east'], params['north'])
                 raw_fuels = vrt.read(1, window=window, out_shape=(params['height'], params['width']))
 
-                # --- NEW: DIAGNOSTIC PRINTOUT ---
                 unique_fuels = np.unique(raw_fuels)
                 status_callback(f"   -> [DIAGNOSTIC] Raw raster integers found in this crop: {unique_fuels}")
 
-                # 4. TRANSLATE DATA TO ODIN ENUM
-                # Default "No Data" or unknown values to Rock so they don't artificially burn
-                idx_fallback = fuel_map.get("Rock_Bare", 0) 
+                # 4. TRANSLATE DATA TO ODIN ENUM (vectorized — avoids ~1M Python iterations)
+                idx_fallback = fuel_map.get("Rock_Bare", 0)
                 
-                for y in range(params['height']):
-                    for x in range(params['width']):
-                        gov_id = raw_fuels[y, x]
-                        
-                        # Step A: Get string name (Fallback to Rock_Bare instead of C7 Pine)
-                        fuel_name = NRCAN_FBP_DICTIONARY.get(gov_id, "Rock_Bare")
-                        
-                        # Step B: Look up Odin Integer
-                        fuel_grid[y, x] = fuel_map.get(fuel_name, idx_fallback)
+                max_code = max(NRCAN_FBP_DICTIONARY.keys())
+                lookup = np.full(max_code + 1, idx_fallback, dtype=np.uint8)
+                for gov_code, fuel_name in NRCAN_FBP_DICTIONARY.items():
+                    lookup[gov_code] = fuel_map.get(fuel_name, idx_fallback)
+
+                raw_int = raw_fuels.astype(np.int32)
+                in_range = (raw_int >= 0) & (raw_int <= max_code)
+                fuel_grid = np.where(
+                    in_range,
+                    lookup[np.clip(raw_int, 0, max_code)],
+                    idx_fallback
+                ).astype(np.uint8)
                         
         status_callback("   -> FBP Raster successfully applied.")
     except Exception as e:

@@ -21,7 +21,8 @@ from matplotlib.figure import Figure
 from core.utils import to_decimal_degrees
 from pipeline_map.baker import export_pocmap
 from pipeline_map.gis_orchestrator import run_gis_pipeline
-from pipeline_weather.weather_api import fetch_live_telemetry
+from pipeline_weather.weather_api import fetch_live_telemetry, OpenMeteoFetcher
+from pipeline_weather.fwi_math import FWICalculator
 from pipeline_weather.baker import WeatherBaker
 
 ctk.set_appearance_mode("Light")
@@ -317,17 +318,49 @@ class POC_Studio(ctk.CTk):
         ctk.CTkLabel(pg_ctrls, text="Scale (Locked to Reality):", font=ctk.CTkFont(weight="bold"), text_color=Palette.TEXT_LIGHT).grid(row=7, column=0, sticky="e", pady=(10,0), padx=(0,15))
         ctk.CTkLabel(pg_ctrls, text="1024 x 1024 cells @ 30.0m resolution", text_color=Palette.SUCCESS).grid(row=7, column=1, sticky="w", pady=(10,0))
         
-        # 6. Weather & Output
-        ctk.CTkLabel(pg_ctrls, text="Weather Target:", font=ctk.CTkFont(weight="bold"), text_color=Palette.TEXT_LIGHT).grid(row=8, column=0, sticky="e", pady=(20,0), padx=(0,15))
-        self.pg_weather = ctk.CTkOptionMenu(pg_ctrls, values=["Moderate (Blue) - NO Wind", "Very High (Orange)", "Extreme (Red) - High Wind", "Extreme Drought (High BUI)"], fg_color=Palette.DARK_WIDGET, button_color=Palette.DARK_WIDGET_HOVER)
+        # 6. Weather — Fire Danger Preset + fully tunable parameter fields
+        ctk.CTkLabel(pg_ctrls, text="Fire Danger Preset:", font=ctk.CTkFont(weight="bold"), text_color=Palette.TEXT_LIGHT).grid(row=8, column=0, sticky="e", pady=(20,0), padx=(0,15))
+        self.pg_weather = ctk.CTkOptionMenu(
+            pg_ctrls,
+            values=["Low", "Medium", "High", "Very High", "Extreme"],
+            fg_color=Palette.DARK_WIDGET, button_color=Palette.DARK_WIDGET_HOVER,
+            command=self._apply_pg_preset
+        )
+        self.pg_weather.set("High")
         self.pg_weather.grid(row=8, column=1, sticky="ew", pady=(20,0))
-        
-        ctk.CTkLabel(pg_ctrls, text="Test Name:", font=ctk.CTkFont(weight="bold"), text_color=Palette.TEXT_LIGHT).grid(row=9, column=0, sticky="e", pady=(10,0), padx=(0,15))
+
+        ctk.CTkLabel(pg_ctrls, text="── Weather Parameters ──", text_color=Palette.TEXT_MUTED,
+                     font=ctk.CTkFont(size=10)).grid(row=9, column=0, columnspan=2, pady=(12,4))
+
+        def _wfield(label, row, attr):
+            ctk.CTkLabel(pg_ctrls, text=label, font=ctk.CTkFont(size=11),
+                         text_color=Palette.TEXT_LIGHT).grid(row=row, column=0, sticky="e", pady=3, padx=(0,10))
+            e = ctk.CTkEntry(pg_ctrls, fg_color=Palette.DARK_PANEL, text_color="white", width=110)
+            e.grid(row=row, column=1, sticky="w", pady=3)
+            setattr(self, attr, e)
+
+        _wfield("Temp (°C):",         10, "pg_w_temp")
+        _wfield("Rel. Humidity %:",   11, "pg_w_rh")
+        _wfield("Wind Speed km/h:",   12, "pg_w_wind_spd")
+        _wfield("Wind Direction °:",  13, "pg_w_wind_dir")
+        _wfield("Rain mm/24h:",       14, "pg_w_rain")
+
+        ctk.CTkLabel(pg_ctrls, text="── FWI Moisture Codes ──", text_color=Palette.TEXT_MUTED,
+                     font=ctk.CTkFont(size=10)).grid(row=15, column=0, columnspan=2, pady=(8,4))
+
+        _wfield("FFMC:",  16, "pg_w_ffmc")
+        _wfield("DMC:",   17, "pg_w_dmc")
+        _wfield("DC:",    18, "pg_w_dc")
+
+        # Populate field defaults via the "High" preset
+        self._apply_pg_preset("High")
+
+        ctk.CTkLabel(pg_ctrls, text="Test Name:", font=ctk.CTkFont(weight="bold"), text_color=Palette.TEXT_LIGHT).grid(row=19, column=0, sticky="e", pady=(20,0), padx=(0,15))
         self.pg_name = ctk.CTkEntry(pg_ctrls, placeholder_text="e.g. Test1_ExpCurve", fg_color=Palette.DARK_PANEL, text_color="white")
-        self.pg_name.grid(row=9, column=1, sticky="ew", pady=(10,0))
+        self.pg_name.grid(row=19, column=1, sticky="ew", pady=(20,0))
 
         self.bake_pg_btn = ctk.CTkButton(pg_ctrls, text="BAKE TEST LAB (.pocmap & .pocwea)", font=ctk.CTkFont(weight="bold"), fg_color=Palette.DARK_ACCENT, hover_color=Palette.DARK_ACCENT_HOVER, text_color="white", command=self.execute_pg_bake)
-        self.bake_pg_btn.grid(row=10, column=0, columnspan=2, sticky="w", pady=(30, 20))
+        self.bake_pg_btn.grid(row=20, column=0, columnspan=2, sticky="w", pady=(20, 20))
 
         # --- Right Column: Live 3D Plot ---
         self.pg_plot_frame = ctk.CTkFrame(self.pg_form, fg_color=Palette.DARK_PANEL, corner_radius=10)
@@ -345,23 +378,55 @@ class POC_Studio(ctk.CTk):
         # Draw initial state
         self._update_pg_preview()
 
+    # fmt: off
+    _PG_PRESETS = {
+        # Preset        Temp   RH  Wind  Dir  Rain  FFMC   DMC    DC
+        "Low":         (12.0, 70.0,  5.0, 270.0, 0.0,  65.0,   8.0,  40.0),
+        "Medium":      (18.0, 50.0, 10.0, 270.0, 0.0,  78.0,  25.0, 120.0),
+        "High":        (25.0, 35.0, 20.0, 270.0, 0.0,  86.0,  55.0, 220.0),
+        "Very High":   (30.0, 25.0, 30.0, 270.0, 0.0,  91.0,  90.0, 350.0),
+        "Extreme":     (35.0, 15.0, 50.0, 270.0, 0.0,  95.0, 130.0, 600.0),
+    }
+    # fmt: on
+
+    def _apply_pg_preset(self, preset_name: str):
+        """Populate all 8 editable weather fields from the selected fire-danger preset."""
+        vals = self._PG_PRESETS.get(preset_name)
+        if vals is None:
+            return
+        temp, rh, wind_spd, wind_dir, rain, ffmc, dmc, dc = vals
+        for entry, val in (
+            (self.pg_w_temp,     temp),
+            (self.pg_w_rh,       rh),
+            (self.pg_w_wind_spd, wind_spd),
+            (self.pg_w_wind_dir, wind_dir),
+            (self.pg_w_rain,     rain),
+            (self.pg_w_ffmc,     ffmc),
+            (self.pg_w_dmc,      dmc),
+            (self.pg_w_dc,       dc),
+        ):
+            entry.delete(0, 'end')
+            entry.insert(0, str(val))
+
     def _update_pg_preview(self, *args):
         self.ax.clear()
         self.ax.set_axis_off()
         self.ax.set_facecolor(Palette.DARK_PANEL)
         
-        # 1. Parse Parameters safely
-        try: size = int(self.pg_size.get() or 512)
-        except: size = 512
-        try: res = float(self.pg_res.get() or 10.0)
-        except: res = 10.0
+        # Grid is locked to 1024 × 1024 @ 30 m (pg_size/pg_res removed as editable fields)
+        size      = 1024
+        res       = 30.0
+        map_meters = size * res
+
         try: slope_val = float(self.pg_slope.get() or 0.0)
         except: slope_val = 0.0
 
-        map_meters = size * res
-        slope_rad = np.radians(slope_val)
+        try: unit = self.pg_slope_unit.get()
+        except: unit = "Deg"
 
-        # 2. Build Physical Meshgrid
+        slope_rad = np.arctan(slope_val / 100.0) if unit == "%" else np.radians(slope_val)
+
+        # Low-res meshgrid for display performance
         x = np.linspace(-map_meters/2, map_meters/2, 40)
         y = np.linspace(-map_meters/2, map_meters/2, 40)
         X, Y = np.meshgrid(x, y)
@@ -369,24 +434,30 @@ class POC_Studio(ctk.CTk):
         shape = self.pg_shape.get()
         Z = np.zeros_like(X)
 
-        # 3. Apply Geometry
         if shape == "Ramp":
             Z = (Y - np.min(Y)) * np.tan(slope_rad)
         elif shape == "Ridge":
-            max_z = (map_meters/2) * np.tan(slope_rad)
-            Z = max_z - (np.abs(X) * np.tan(slope_rad))
-        elif shape == "Saddle":
-            Z = (X**2 - Y**2) * (np.tan(slope_rad) / map_meters)
+            max_z = (map_meters / 2) * np.tan(slope_rad)
+            Z = np.maximum(0.0, max_z - np.abs(X) * np.tan(slope_rad))
         elif shape == "Bowl":
             Z = (X**2 + Y**2) * (np.tan(slope_rad) / map_meters)
+        elif shape == "Saddle":
+            Z = (X**2 - Y**2) * (np.tan(slope_rad) / map_meters)
+            Z -= np.min(Z)
+        elif shape == "Cone":
+            r = np.sqrt(X**2 + Y**2)
+            Z = np.maximum(0.0, (map_meters / 2 - r) * np.tan(slope_rad))
+        elif shape == "Undulations":
+            freq  = map_meters / 4.0
+            max_z = (map_meters / 8) * np.tan(slope_rad)
+            Z = np.sin(X / freq * 2 * np.pi) * np.cos(Y / freq * 2 * np.pi) * max_z
+            Z -= np.min(Z)
 
-        # 4. Lock Aspect Ratio to 1:1:1 Reality
         z_range = np.ptp(Z) if np.ptp(Z) > 0 else 1.0
         self.ax.set_box_aspect((1, 1, z_range / map_meters))
-        
         self.ax.plot_surface(X, Y, Z, cmap='magma', edgecolor='none')
-        self.ax.set_title(f"{shape} Geometry\n{map_meters}m Wide | Slope: {slope_val}°", fontsize=10, color="#94A3B8")
-        
+        slope_label = f"{slope_val}{unit}"
+        self.ax.set_title(f"{shape} | {map_meters/1000:.1f} km² | Slope: {slope_label}", fontsize=10, color="#94A3B8")
         self.canvas.draw()
 
     # =========================================================================
@@ -455,43 +526,85 @@ class POC_Studio(ctk.CTk):
             # ==========================================
             # PHASE 2: METEOROLOGY & WEATHER BAKE
             # ==========================================
-            self.log_event("Fetching meteorological telemetry...", "SYS")
-            weather_data = fetch_live_telemetry(self.active_lat, self.active_lon, self.log_event)
-            
-            if weather_data:
-                safe_region = region.replace(" ", "_").lower()
-                safe_name = name.replace(" ", "_").lower()
-                
-                ignis_base = r"C:\Users\cread\VSCode_Projects\IGNIS\assets\maps"
-                target_dir = os.path.join(ignis_base, country, province, safe_region)
-                os.makedirs(target_dir, exist_ok=True)
-                
-                final_filepath = os.path.join(target_dir, f"{safe_name}.pocwea")
-                
-                baker = WeatherBaker(year_length=365)
-                
-                # Broadcast the live conditions across the array
-                for day in range(365):
-                    baker.set_day(
-                        day_index=day,
-                        temp=weather_data['temp'],
-                        rh=weather_data['rh'],
-                        wind_spd=weather_data['wind_spd'],
-                        wind_dir=weather_data['wind_dir'],
-                        rain=weather_data['rain'],
-                        ffmc=85.0,  
-                        dmc=6.0,    
-                        dc=15.0     
+            safe_region = region.replace(" ", "_").lower()
+            safe_name   = name.replace(" ", "_").lower()
+            ignis_base  = r"C:\Users\cread\VSCode_Projects\IGNIS\assets\maps"
+            target_dir  = os.path.join(ignis_base, country, province, safe_region)
+            os.makedirs(target_dir, exist_ok=True)
+            final_filepath = os.path.join(target_dir, f"{safe_name}.pocwea")
+
+            bake_year       = datetime.datetime.now().year - 1  # last complete calendar year
+            weather_baker   = WeatherBaker(year_length=365)
+            historical_ok   = False
+
+            # --- Attempt 1: real historical climatology + FWI calculation ---
+            try:
+                self.log_event(f"Fetching {bake_year} historical climate archive (Open-Meteo)...", "METEO")
+                fetcher = OpenMeteoFetcher()
+                df = fetcher.fetch_historical_years(
+                    lat=self.active_lat, lon=self.active_lon,
+                    end_year=bake_year, years_back=1
+                )
+                self.log_event(f"Computing CFFDRS FWI codes for {len(df)} days...", "METEO")
+                calc = FWICalculator(start_ffmc=85.0, start_dmc=6.0, start_dc=15.0)
+                df   = calc.process_season(df)
+
+                n = min(len(df), 365)
+                for i in range(n):
+                    row = df.iloc[i]
+                    weather_baker.set_day(
+                        day_index=i,
+                        temp=float(row['temperature_c']),
+                        rh=float(row['relative_humidity']),
+                        wind_spd=float(row['wind_speed_kmh']),
+                        wind_dir=float(row.get('wind_direction_deg', 270.0)),
+                        rain=float(row['rain_24h_mm']),
+                        ffmc=float(row['ffmc']),
+                        dmc=float(row['dmc']),
+                        dc=float(row['dc'])
                     )
-                
-                current_year = datetime.datetime.now().year
-                success = baker.bake(final_filepath, self.active_lat, self.active_lon, current_year)
-                
-                if success:
-                    self.weather_status.configure(text=f"[x] Weather Baked (.pocwea)", text_color=Palette.SUCCESS)
-                    self.log_event("Master Pipeline Complete!", "SUCCESS")
+                # Pad with last-day values if API returned fewer than 365 days
+                if n < 365:
+                    last = df.iloc[-1]
+                    self.log_event(f"[WARN] Only {n} days in archive — padding remaining {365-n} days.", "WARN")
+                    for i in range(n, 365):
+                        weather_baker.set_day(
+                            day_index=i,
+                            temp=float(last['temperature_c']), rh=float(last['relative_humidity']),
+                            wind_spd=float(last['wind_speed_kmh']), wind_dir=float(last.get('wind_direction_deg', 270.0)),
+                            rain=float(last['rain_24h_mm']),
+                            ffmc=float(last['ffmc']), dmc=float(last['dmc']), dc=float(last['dc'])
+                        )
+                historical_ok = True
+                self.log_event(f"Real CFFDRS FWI seasonal data computed from {bake_year} archive.", "OK")
+
+            except Exception as hist_err:
+                self.log_event(f"Historical fetch failed ({hist_err}). Falling back to live telemetry.", "WARN")
+
+            # --- Attempt 2: live snapshot broadcast (fallback) ---
+            if not historical_ok:
+                weather_data = fetch_live_telemetry(self.active_lat, self.active_lon, self.log_event)
+                if weather_data:
+                    for day in range(365):
+                        weather_baker.set_day(
+                            day_index=day,
+                            temp=weather_data['temp'],  rh=weather_data['rh'],
+                            wind_spd=weather_data['wind_spd'], wind_dir=weather_data['wind_dir'],
+                            rain=weather_data['rain'],
+                            ffmc=85.0, dmc=6.0, dc=15.0
+                        )
+                else:
+                    self.log_event("All weather sources failed. Skipping .pocwea.", "ERROR")
+                    self.bake_master_btn.configure(state="normal", text="EXECUTE MASTER PIPELINE (MAP + WEATHER)")
+                    self.gis_progress.stop()
+                    return
+
+            success = weather_baker.bake(final_filepath, self.active_lat, self.active_lon, bake_year)
+            if success:
+                self.weather_status.configure(text="[x] Weather Baked (.pocwea)", text_color=Palette.SUCCESS)
+                self.log_event("Master Pipeline Complete!", "SUCCESS")
             else:
-                self.log_event("Weather fetch failed. Try again later.", "WARN")
+                self.log_event("Weather bake failed.", "ERROR")
 
             # Clean up UI State
             self.bake_master_btn.configure(state="normal", text="EXECUTE MASTER PIPELINE (MAP + WEATHER)")
@@ -515,11 +628,11 @@ class POC_Studio(ctk.CTk):
         try:
             self.log_event(f"Building Proving Grounds: {test_name}...", "SYS")
             
-            size = 1024
-            res = 30.0
+            size      = 1024
+            res       = 30.0
             map_meters = size * res
-            
-            # 1. Parse Fuel Enums directly from Odin
+
+            # 1. Parse Fuel Enums from Odin
             odin_file = self.odin_path.get().strip()
             fuel_dict = {}
             with open(odin_file, 'r') as f:
@@ -536,12 +649,17 @@ class POC_Studio(ctk.CTk):
                             idx = int(parts[1].strip().strip(','))
                         fuel_dict[name] = idx
                         idx += 1
-            
-            # 2. Build Base Geometry
+
+            # 2. Build Terrain Geometry
             try: slope_val = float(self.pg_slope.get() or 0.0)
             except: slope_val = 0.0
-            slope_rad = np.radians(slope_val)
-            
+
+            # Respect the slope unit selector — convert % grade to radians directly
+            if self.pg_slope_unit.get() == "%":
+                slope_rad = np.arctan(slope_val / 100.0)
+            else:
+                slope_rad = np.radians(slope_val)
+
             x = np.linspace(-map_meters/2, map_meters/2, size)
             y = np.linspace(-map_meters/2, map_meters/2, size)
             X, Y = np.meshgrid(x, y)
@@ -549,28 +667,38 @@ class POC_Studio(ctk.CTk):
 
             shape = self.pg_shape.get()
             if shape == "Ramp":
-                Z = (Y - np.min(Y)) * np.tan(slope_rad)
-            elif shape == "Undulations":
-                freq = map_meters / 4.0 
-                max_z = (map_meters/8) * np.tan(slope_rad)
-                Z = np.sin(X / freq * 2 * np.pi) * np.cos(Y / freq * 2 * np.pi) * max_z
+                Z = ((Y - np.min(Y)) * np.tan(slope_rad)).astype(np.float32)
+            elif shape == "Ridge":
+                max_z = (map_meters / 2) * np.tan(slope_rad)
+                Z = np.maximum(0.0, max_z - np.abs(X) * np.tan(slope_rad)).astype(np.float32)
+            elif shape == "Bowl":
+                Z = ((X**2 + Y**2) * (np.tan(slope_rad) / map_meters)).astype(np.float32)
+            elif shape == "Saddle":
+                Z = ((X**2 - Y**2) * (np.tan(slope_rad) / map_meters)).astype(np.float32)
                 Z -= np.min(Z)
-            
-            # Calculate physical slope & aspect
-            dy, dx = np.gradient(Z, res, res)
-            slope = np.degrees(np.arctan(np.sqrt(dx**2 + dy**2))).astype(np.float32)
-            aspect = np.degrees(np.arctan2(dx, -dy)).astype(np.float32)
-            aspect[aspect < 0] += 360.0
+            elif shape == "Cone":
+                r = np.sqrt(X**2 + Y**2)
+                Z = np.maximum(0.0, (map_meters / 2 - r) * np.tan(slope_rad)).astype(np.float32)
+            elif shape == "Undulations":
+                freq  = map_meters / 4.0
+                max_z = (map_meters / 8) * np.tan(slope_rad)
+                Z = (np.sin(X / freq * 2 * np.pi) * np.cos(Y / freq * 2 * np.pi) * max_z).astype(np.float32)
+                Z -= np.min(Z)
+            # "Flat" → Z stays zeros
 
-            # 3. Apply Fuel Layout
+            dy, dx = np.gradient(Z, res, res)
+            slope_grid = np.degrees(np.arctan(np.sqrt(dx**2 + dy**2))).astype(np.float32)
+            aspect_grid = np.degrees(np.arctan2(dx, -dy)).astype(np.float32)
+            aspect_grid[aspect_grid < 0] += 360.0
+
+            # 3. Fuel Layout
             base_int = fuel_dict.get(self.pg_fuel.get(), 0)
-            sec_int = fuel_dict.get(self.pg_sec_fuel.get(), 0)
-            
+            sec_int  = fuel_dict.get(self.pg_sec_fuel.get(), 0)
             fuel_grid = np.full((size, size), base_int, dtype=np.uint8)
             pattern = self.pg_fuel_pattern.get()
-            
+
             if pattern == "Half-and-Half (Left/Right)":
-                fuel_grid[:, int(size/2):] = sec_int
+                fuel_grid[:, size//2:] = sec_int
             elif pattern == "Checkerboard":
                 chk = 64
                 for i in range(0, size, chk):
@@ -578,42 +706,43 @@ class POC_Studio(ctk.CTk):
                         if (i//chk + j//chk) % 2 == 1:
                             fuel_grid[i:i+chk, j:j+chk] = sec_int
             elif pattern == "Center VAR Block":
-                c = int(size/2)
-                # 9x9 block of Oil Lease
-                oil_int = fuel_dict.get("Oil_Lease_Site", 0)
-                fuel_grid[c-4:c+5, c-4:c+5] = oil_int
-                # 3x3 block of Structure inside it
-                struct_int = fuel_dict.get("Structure_VAR", 0)
-                fuel_grid[c-1:c+2, c-1:c+2] = struct_int
+                c = size // 2
+                fuel_grid[c-4:c+5, c-4:c+5] = fuel_dict.get("Oil_Lease_Site", 0)
+                fuel_grid[c-1:c+2, c-1:c+2] = fuel_dict.get("Structure_VAR", 0)
 
-            soil_grid = np.full((size, size), 1, dtype=np.uint8) # Silt Loam
+            soil_grid = np.full((size, size), 1, dtype=np.uint8)  # Silt Loam
 
-            # 4. Save Paths
-            safe_name = test_name.replace(" ", "_").lower()
+            # 4. Output paths
+            safe_name  = test_name.replace(" ", "_").lower()
             target_dir = os.path.join(r"C:\Users\cread\VSCode_Projects\IGNIS\assets\maps", "Proving_Grounds")
             os.makedirs(target_dir, exist_ok=True)
-            
             map_path = os.path.join(target_dir, f"{safe_name}.pocmap")
             wea_path = os.path.join(target_dir, f"{safe_name}.pocwea")
 
             # 5. Pack Map Binary
-            export_pocmap(map_path, f"Lab: {test_name}", size, size, res, 0.0, 0.0, Z, slope, aspect, fuel_grid, soil_grid, self.log_event)
+            export_pocmap(map_path, f"Lab: {test_name}", size, size, res, 0.0, 0.0,
+                          Z, slope_grid, aspect_grid, fuel_grid, soil_grid, self.log_event)
 
-            # 6. Pack Weather Binary
-            weather_target = self.pg_weather.get()
-            w_temp, w_rh, w_wind = 15.0, 50.0, 0.0
-            
-            if weather_target == "Extreme (Red) - High Wind":
-                w_temp, w_rh, w_wind = 30.0, 20.0, 45.0
-            elif weather_target == "Very High (Orange)":
-                w_temp, w_rh, w_wind = 25.0, 30.0, 20.0
-            elif weather_target == "Extreme Drought (High BUI)":
-                w_temp, w_rh, w_wind = 35.0, 15.0, 10.0
+            # 6. Pack Weather Binary — read directly from tunable UI fields
+            def _sf(entry, default):
+                try: return float(entry.get() or default)
+                except: return float(default)
 
-            baker = WeatherBaker(year_length=365)
+            w_temp     = _sf(self.pg_w_temp,     25.0)
+            w_rh       = _sf(self.pg_w_rh,       35.0)
+            w_wind_spd = _sf(self.pg_w_wind_spd, 20.0)
+            w_wind_dir = _sf(self.pg_w_wind_dir, 270.0)
+            w_rain     = _sf(self.pg_w_rain,      0.0)
+            w_ffmc     = _sf(self.pg_w_ffmc,     86.0)
+            w_dmc      = _sf(self.pg_w_dmc,      55.0)
+            w_dc       = _sf(self.pg_w_dc,      220.0)
+
+            pg_baker = WeatherBaker(year_length=365)
             for day in range(365):
-                baker.set_day(day, temp=w_temp, rh=w_rh, wind_spd=w_wind, wind_dir=270.0, rain=0.0, ffmc=90.0, dmc=150.0, dc=500.0)
-            baker.bake(wea_path, 0.0, 0.0, 2024)
+                pg_baker.set_day(day, temp=w_temp, rh=w_rh, wind_spd=w_wind_spd,
+                                 wind_dir=w_wind_dir, rain=w_rain,
+                                 ffmc=w_ffmc, dmc=w_dmc, dc=w_dc)
+            pg_baker.bake(wea_path, 0.0, 0.0, 2024)
 
             self.log_event("Proving Grounds lab ready for launch!", "SUCCESS")
             self.bake_pg_btn.configure(state="normal", text="BAKE TEST LAB (.pocmap & .pocwea)")
