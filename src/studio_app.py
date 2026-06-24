@@ -318,17 +318,49 @@ class POC_Studio(ctk.CTk):
         ctk.CTkLabel(pg_ctrls, text="Scale (Locked to Reality):", font=ctk.CTkFont(weight="bold"), text_color=Palette.TEXT_LIGHT).grid(row=7, column=0, sticky="e", pady=(10,0), padx=(0,15))
         ctk.CTkLabel(pg_ctrls, text="1024 x 1024 cells @ 30.0m resolution", text_color=Palette.SUCCESS).grid(row=7, column=1, sticky="w", pady=(10,0))
         
-        # 6. Weather & Output
-        ctk.CTkLabel(pg_ctrls, text="Weather Target:", font=ctk.CTkFont(weight="bold"), text_color=Palette.TEXT_LIGHT).grid(row=8, column=0, sticky="e", pady=(20,0), padx=(0,15))
-        self.pg_weather = ctk.CTkOptionMenu(pg_ctrls, values=["Moderate (Blue) - NO Wind", "Very High (Orange)", "Extreme (Red) - High Wind", "Extreme Drought (High BUI)"], fg_color=Palette.DARK_WIDGET, button_color=Palette.DARK_WIDGET_HOVER)
+        # 6. Weather — Fire Danger Preset + fully tunable parameter fields
+        ctk.CTkLabel(pg_ctrls, text="Fire Danger Preset:", font=ctk.CTkFont(weight="bold"), text_color=Palette.TEXT_LIGHT).grid(row=8, column=0, sticky="e", pady=(20,0), padx=(0,15))
+        self.pg_weather = ctk.CTkOptionMenu(
+            pg_ctrls,
+            values=["Low", "Medium", "High", "Very High", "Extreme"],
+            fg_color=Palette.DARK_WIDGET, button_color=Palette.DARK_WIDGET_HOVER,
+            command=self._apply_pg_preset
+        )
+        self.pg_weather.set("High")
         self.pg_weather.grid(row=8, column=1, sticky="ew", pady=(20,0))
-        
-        ctk.CTkLabel(pg_ctrls, text="Test Name:", font=ctk.CTkFont(weight="bold"), text_color=Palette.TEXT_LIGHT).grid(row=9, column=0, sticky="e", pady=(10,0), padx=(0,15))
+
+        ctk.CTkLabel(pg_ctrls, text="── Weather Parameters ──", text_color=Palette.TEXT_MUTED,
+                     font=ctk.CTkFont(size=10)).grid(row=9, column=0, columnspan=2, pady=(12,4))
+
+        def _wfield(label, row, attr):
+            ctk.CTkLabel(pg_ctrls, text=label, font=ctk.CTkFont(size=11),
+                         text_color=Palette.TEXT_LIGHT).grid(row=row, column=0, sticky="e", pady=3, padx=(0,10))
+            e = ctk.CTkEntry(pg_ctrls, fg_color=Palette.DARK_PANEL, text_color="white", width=110)
+            e.grid(row=row, column=1, sticky="w", pady=3)
+            setattr(self, attr, e)
+
+        _wfield("Temp (°C):",         10, "pg_w_temp")
+        _wfield("Rel. Humidity %:",   11, "pg_w_rh")
+        _wfield("Wind Speed km/h:",   12, "pg_w_wind_spd")
+        _wfield("Wind Direction °:",  13, "pg_w_wind_dir")
+        _wfield("Rain mm/24h:",       14, "pg_w_rain")
+
+        ctk.CTkLabel(pg_ctrls, text="── FWI Moisture Codes ──", text_color=Palette.TEXT_MUTED,
+                     font=ctk.CTkFont(size=10)).grid(row=15, column=0, columnspan=2, pady=(8,4))
+
+        _wfield("FFMC:",  16, "pg_w_ffmc")
+        _wfield("DMC:",   17, "pg_w_dmc")
+        _wfield("DC:",    18, "pg_w_dc")
+
+        # Populate field defaults via the "High" preset
+        self._apply_pg_preset("High")
+
+        ctk.CTkLabel(pg_ctrls, text="Test Name:", font=ctk.CTkFont(weight="bold"), text_color=Palette.TEXT_LIGHT).grid(row=19, column=0, sticky="e", pady=(20,0), padx=(0,15))
         self.pg_name = ctk.CTkEntry(pg_ctrls, placeholder_text="e.g. Test1_ExpCurve", fg_color=Palette.DARK_PANEL, text_color="white")
-        self.pg_name.grid(row=9, column=1, sticky="ew", pady=(10,0))
+        self.pg_name.grid(row=19, column=1, sticky="ew", pady=(20,0))
 
         self.bake_pg_btn = ctk.CTkButton(pg_ctrls, text="BAKE TEST LAB (.pocmap & .pocwea)", font=ctk.CTkFont(weight="bold"), fg_color=Palette.DARK_ACCENT, hover_color=Palette.DARK_ACCENT_HOVER, text_color="white", command=self.execute_pg_bake)
-        self.bake_pg_btn.grid(row=10, column=0, columnspan=2, sticky="w", pady=(30, 20))
+        self.bake_pg_btn.grid(row=20, column=0, columnspan=2, sticky="w", pady=(20, 20))
 
         # --- Right Column: Live 3D Plot ---
         self.pg_plot_frame = ctk.CTkFrame(self.pg_form, fg_color=Palette.DARK_PANEL, corner_radius=10)
@@ -345,6 +377,36 @@ class POC_Studio(ctk.CTk):
 
         # Draw initial state
         self._update_pg_preview()
+
+    # fmt: off
+    _PG_PRESETS = {
+        # Preset        Temp   RH  Wind  Dir  Rain  FFMC   DMC    DC
+        "Low":         (12.0, 70.0,  5.0, 270.0, 0.0,  65.0,   8.0,  40.0),
+        "Medium":      (18.0, 50.0, 10.0, 270.0, 0.0,  78.0,  25.0, 120.0),
+        "High":        (25.0, 35.0, 20.0, 270.0, 0.0,  86.0,  55.0, 220.0),
+        "Very High":   (30.0, 25.0, 30.0, 270.0, 0.0,  91.0,  90.0, 350.0),
+        "Extreme":     (35.0, 15.0, 50.0, 270.0, 0.0,  95.0, 130.0, 600.0),
+    }
+    # fmt: on
+
+    def _apply_pg_preset(self, preset_name: str):
+        """Populate all 8 editable weather fields from the selected fire-danger preset."""
+        vals = self._PG_PRESETS.get(preset_name)
+        if vals is None:
+            return
+        temp, rh, wind_spd, wind_dir, rain, ffmc, dmc, dc = vals
+        for entry, val in (
+            (self.pg_w_temp,     temp),
+            (self.pg_w_rh,       rh),
+            (self.pg_w_wind_spd, wind_spd),
+            (self.pg_w_wind_dir, wind_dir),
+            (self.pg_w_rain,     rain),
+            (self.pg_w_ffmc,     ffmc),
+            (self.pg_w_dmc,      dmc),
+            (self.pg_w_dc,       dc),
+        ):
+            entry.delete(0, 'end')
+            entry.insert(0, str(val))
 
     def _update_pg_preview(self, *args):
         self.ax.clear()
@@ -661,30 +723,24 @@ class POC_Studio(ctk.CTk):
             export_pocmap(map_path, f"Lab: {test_name}", size, size, res, 0.0, 0.0,
                           Z, slope_grid, aspect_grid, fuel_grid, soil_grid, self.log_event)
 
-            # 6. Pack Weather Binary — physically distinct FWI per danger scenario
-            weather_target = self.pg_weather.get()
+            # 6. Pack Weather Binary — read directly from tunable UI fields
+            def _sf(entry, default):
+                try: return float(entry.get() or default)
+                except: return float(default)
 
-            # Defaults: Moderate — low danger, no wind, moist fine fuels
-            w_temp, w_rh, w_wind = 15.0, 50.0, 0.0
-            w_ffmc, w_dmc, w_dc  = 72.0, 15.0, 80.0
-
-            if weather_target == "Very High (Orange)":
-                # Elevated heat & dryness — significant spread risk
-                w_temp, w_rh, w_wind = 25.0, 30.0, 20.0
-                w_ffmc, w_dmc, w_dc  = 88.0, 60.0, 250.0
-            elif weather_target == "Extreme (Red) - High Wind":
-                # Hot, dry, strong wind — extreme ISI from wind × FFMC
-                w_temp, w_rh, w_wind = 30.0, 20.0, 45.0
-                w_ffmc, w_dmc, w_dc  = 93.0, 60.0, 250.0
-            elif weather_target == "Extreme Drought (High BUI)":
-                # Deep drought — very high BUI drives crown fire potential
-                w_temp, w_rh, w_wind = 35.0, 15.0, 10.0
-                w_ffmc, w_dmc, w_dc  = 90.0, 250.0, 700.0
+            w_temp     = _sf(self.pg_w_temp,     25.0)
+            w_rh       = _sf(self.pg_w_rh,       35.0)
+            w_wind_spd = _sf(self.pg_w_wind_spd, 20.0)
+            w_wind_dir = _sf(self.pg_w_wind_dir, 270.0)
+            w_rain     = _sf(self.pg_w_rain,      0.0)
+            w_ffmc     = _sf(self.pg_w_ffmc,     86.0)
+            w_dmc      = _sf(self.pg_w_dmc,      55.0)
+            w_dc       = _sf(self.pg_w_dc,      220.0)
 
             pg_baker = WeatherBaker(year_length=365)
             for day in range(365):
-                pg_baker.set_day(day, temp=w_temp, rh=w_rh, wind_spd=w_wind,
-                                 wind_dir=270.0, rain=0.0,
+                pg_baker.set_day(day, temp=w_temp, rh=w_rh, wind_spd=w_wind_spd,
+                                 wind_dir=w_wind_dir, rain=w_rain,
                                  ffmc=w_ffmc, dmc=w_dmc, dc=w_dc)
             pg_baker.bake(wea_path, 0.0, 0.0, 2024)
 

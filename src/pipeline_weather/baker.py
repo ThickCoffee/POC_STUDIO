@@ -22,7 +22,9 @@ class WeatherBaker:
         """Packs the header + 2D numpy array into a flat binary file (.pocwea)"""
         print(f"[BAKER] Assembling binary for {output_filepath}...")
         
-        os.makedirs(os.path.dirname(output_filepath), exist_ok=True)
+        dir_part = os.path.dirname(output_filepath)
+        if dir_part:
+            os.makedirs(dir_part, exist_ok=True)
         
         try:
             with open(output_filepath, 'wb') as file:
@@ -37,8 +39,9 @@ class WeatherBaker:
                 file.write(self.season_data.astype('<f4').tobytes())
                 
             actual_size = os.path.getsize(output_filepath)
-            print(f"[BAKER] Success! Wrote Header (24 bytes) + {self.year_length} days ({actual_size} bytes).")
-            return True
+            expected_size = 24 + self.year_length * 8 * 4
+            print(f"[BAKER] Success! Wrote Header (24 bytes) + {self.year_length} days ({actual_size} bytes). Expected: {expected_size}.")
+            return actual_size == expected_size
             
         except Exception as e:
             print(f"[BAKER] CRITICAL ERROR during bake: {e}")
