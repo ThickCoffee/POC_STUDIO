@@ -1,5 +1,6 @@
 import os
 import re
+import math
 from shapely.geometry import box
 from rasterio.transform import from_bounds
 from pipeline_map import topo, fuels, osm, baker
@@ -31,8 +32,10 @@ def run_gis_pipeline(lat: float, lon: float, country: str, province: str, region
     """Orchestrates the entire map baking process directly into the IGNIS engine."""
     
     # 1. BOUNDING BOX MATH
+    # Longitude degrees shrink with cos(lat): at 64°N this is ~48,800 m/deg vs ~111,320 at equator.
+    # Using a hardcoded value would stretch or compress the map horizontally at non-tropical latitudes.
     METERS_PER_DEGREE_LAT = 111320.0
-    METERS_PER_DEGREE_LON = 63850.0  
+    METERS_PER_DEGREE_LON = 111320.0 * math.cos(math.radians(lat))
     
     size = 1024
     res = 30.0
