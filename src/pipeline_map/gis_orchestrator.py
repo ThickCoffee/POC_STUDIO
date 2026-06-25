@@ -6,25 +6,30 @@ from rasterio.transform import from_bounds
 from pipeline_map import topo, fuels, osm, baker
 
 def extract_odin_enums(odin_filepath: str, log_callback) -> dict:
-    """Scans the Odin enum file to find the FuelType order and maps Strings to Ints."""
+    """Scans the Odin enum file to find FuelType order and maps names to ordinals."""
     fuel_map = {}
     try:
         with open(odin_filepath, 'r') as f:
             content = f.read()
-            
-        match = re.search(r'FuelType\s*::\s*enum.*?\{(.*?)\}', content, re.DOTALL)
+
+        match = re.search(r'FuelType\s*::\s*enum(?:\s+u\d+)?.*?\{(.*?)\}', content, re.DOTALL)
         if match:
-            enum_block = match.group(1)
-            clean_lines = [line.split('//')[0].strip() for line in enum_block.split('\n')]
-            enum_names = [word.strip(',') for line in clean_lines for word in line.split() if word]
-            
-            for index, name in enumerate(enum_names):
-                fuel_map[name] = index
-                
+            idx = 0
+            for line in match.group(1).split('\n'):
+                line = line.split('//')[0].strip()
+                if not line:
+                    continue
+                parts = line.split('=')
+                name = parts[0].strip().strip(',')
+                if len(parts) > 1:
+                    idx = int(parts[1].strip().strip(','))
+                fuel_map[name] = idx
+                idx += 1
+
         log_callback(f"Successfully mapped {len(fuel_map)} FuelType enums from Odin.", "SYS")
     except Exception as e:
         log_callback(f"Error parsing Odin enums: {e}", "ERROR")
-        
+
     return fuel_map
 
 def run_gis_pipeline(lat: float, lon: float, country: str, province: str, region: str, map_name: str, 

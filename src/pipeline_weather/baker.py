@@ -6,8 +6,8 @@ class WeatherBaker:
     def __init__(self, year_length=365):
         self.year_length = year_length
         # 8 parameters per day:
-        # [0] temp_c, [1] rh, [2] wind_spd, [3] wind_dir, 
-        # [4] rain_mm, [5] ffmc, [6] dmc, [7] dc
+        # [0] temp_c, [1] rh, [2] wind_spd, [3] wind_dir,
+        # [4] rain_24h_mm (daily total), [5] ffmc, [6] dmc, [7] dc
         self.season_data = np.zeros((self.year_length, 8), dtype=np.float32)
         
     def set_day(self, day_index: int, temp: float, rh: float, wind_spd: float, 

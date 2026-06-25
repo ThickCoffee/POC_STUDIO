@@ -8,6 +8,16 @@ import rasterio
 from rasterio.enums import Resampling
 import numpy as np
 
+def compute_aspect_from_gradient(dy, dx):
+    """Cardinal aspect in degrees (0=N, 90=E) matching IGNIS FBP conventions."""
+    return ((90.0 - np.degrees(np.arctan2(-dy, dx))) % 360.0).astype(np.float32)
+
+def compute_slope_aspect(elev_2d, cell_size):
+    dy, dx = np.gradient(elev_2d, cell_size, cell_size)
+    slope = np.degrees(np.arctan(np.sqrt(dx**2 + dy**2))).astype(np.float32)
+    aspect = compute_aspect_from_gradient(dy, dx)
+    return slope, aspect
+
 def get_topography(api_key, south, north, west, east, map_width, map_height, cell_size, map_name, status_callback):
     """Returns flat numpy arrays for elevation, slope, and aspect."""
     
@@ -36,12 +46,10 @@ def get_topography(api_key, south, north, west, east, map_width, map_height, cel
         elev = dataset.read(1, out_shape=(map_height, map_width), resampling=Resampling.bilinear)
     
     # 3. Calculus for Slope & Aspect
-    dy, dx = np.gradient(elev, cell_size, cell_size)
-    slope = np.degrees(np.arctan(np.sqrt(dx**2 + dy**2)))
-    aspect = (90.0 - np.degrees(np.arctan2(-dy, dx))) % 360.0
+    slope, aspect = compute_slope_aspect(elev, cell_size)
 
     return (
         elev.astype(np.float32).flatten(),
-        slope.astype(np.float32).flatten(),
-        aspect.astype(np.float32).flatten()
+        slope.flatten(),
+        aspect.flatten()
     )

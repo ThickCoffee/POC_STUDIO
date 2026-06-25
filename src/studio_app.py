@@ -20,7 +20,8 @@ from matplotlib.figure import Figure
 
 from core.utils import to_decimal_degrees
 from pipeline_map.baker import export_pocmap
-from pipeline_map.gis_orchestrator import run_gis_pipeline
+from pipeline_map.gis_orchestrator import run_gis_pipeline, extract_odin_enums
+from pipeline_map.topo import compute_slope_aspect
 from pipeline_weather.weather_api import fetch_live_telemetry, OpenMeteoFetcher
 from pipeline_weather.fwi_math import FWICalculator
 from pipeline_weather.baker import WeatherBaker
@@ -208,7 +209,7 @@ class POC_Studio(ctk.CTk):
         file_frame1.grid(row=8, column=1, sticky="ew", pady=10)
         file_frame1.grid_columnconfigure(0, weight=1)
         self.fuel_tif_path = ctk.CTkEntry(file_frame1, placeholder_text="Path to NRCan regional fuel .tif")
-        self.fuel_tif_path.insert(0, r"C:\Users\cread\VSCode_Projects\POC_STUDIO\assets\nrcan_fbp_fuels.tif")
+        self.fuel_tif_path.insert(0, r"C:\Users\cread\VSCode_Projects\nrcan_fbp_fuels.tif")
         self.fuel_tif_path.grid(row=0, column=0, sticky="ew", padx=(0,5))
         ctk.CTkButton(file_frame1, text="Browse", width=80, fg_color=Palette.TEXT_MUTED, hover_color=Palette.TEXT_SUB, command=lambda: self._browse_file(self.fuel_tif_path)).grid(row=0, column=1)
 
@@ -632,23 +633,12 @@ class POC_Studio(ctk.CTk):
             res       = 30.0
             map_meters = size * res
 
-            # 1. Parse Fuel Enums from Odin
+            # 1. Parse Fuel Enums from Odin (shared parser with GIS pipeline)
             odin_file = self.odin_path.get().strip()
-            fuel_dict = {}
-            with open(odin_file, 'r') as f:
-                content = f.read()
-                match = re.search(r'FuelType\s*::\s*enum\s*u8\s*\{([^}]+)\}', content)
-                if match:
-                    idx = 0
-                    for line in match.group(1).split('\n'):
-                        line = line.split('//')[0].strip()
-                        if not line: continue
-                        parts = line.split('=')
-                        name = parts[0].strip().strip(',')
-                        if len(parts) > 1:
-                            idx = int(parts[1].strip().strip(','))
-                        fuel_dict[name] = idx
-                        idx += 1
+            fuel_dict = extract_odin_enums(odin_file, self.log_event)
+            if not fuel_dict:
+                self.log_event("CRITICAL: Could not parse FuelType enum from Odin.", "ERROR")
+                return
 
             # 2. Build Terrain Geometry
             try: slope_val = float(self.pg_slope.get() or 0.0)
@@ -687,9 +677,7 @@ class POC_Studio(ctk.CTk):
             # "Flat" → Z stays zeros
 
             dy, dx = np.gradient(Z, res, res)
-            slope_grid = np.degrees(np.arctan(np.sqrt(dx**2 + dy**2))).astype(np.float32)
-            aspect_grid = np.degrees(np.arctan2(dx, -dy)).astype(np.float32)
-            aspect_grid[aspect_grid < 0] += 360.0
+            slope_grid, aspect_grid = compute_slope_aspect(Z, res)
 
             # 3. Fuel Layout
             base_int = fuel_dict.get(self.pg_fuel.get(), 0)
