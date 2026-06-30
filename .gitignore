@@ -1,0 +1,21 @@
+# Python environment
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Map-building intermediates (completed .pocmap / .pocwea go to IGNIS/assets/maps/)
+cache/
+output/
+assets/
+
+# Raw geospatial inputs — keep large rasters outside this repo (see studio_app default path)
+*.tif
+*.tiff
+
+# Local / IDE
+.cursor/
+
+# Debug artifacts
+large_objs.txt
+debug*.log
