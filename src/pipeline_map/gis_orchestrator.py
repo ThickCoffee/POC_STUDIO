@@ -98,7 +98,14 @@ def run_gis_pipeline(lat: float, lon: float, country: str, province: str, region
         def osm_log(msg): log_callback(msg, "OSM")
         bounds_poly = box(west, south, east, north)
         fuel_grid = osm.rasterize_infrastructure(bounds_poly, transform, fuel_grid, fuel_map, osm_log)
-        
+
+        # 6b. SOIL TEXTURE DERIVATION
+        # Must run AFTER OSM so that OSM-sourced water bodies contribute to the
+        # water-proximity correction alongside the NRCan raster water codes.
+        def soil_log(msg): log_callback(msg, "SOIL")
+        soil_log("Deriving soil texture from fuel ecology, water proximity, and elevation...")
+        soil_array = fuels.derive_soil_array(fuel_grid, elev, fuel_map, soil_log)
+
         # 7. PACK BINARY
         final_path = baker.export_pocmap(
             output_filepath=final_filepath, 
