@@ -676,7 +676,6 @@ class POC_Studio(ctk.CTk):
                 Z -= np.min(Z)
             # "Flat" → Z stays zeros
 
-            dy, dx = np.gradient(Z, res, res)
             slope_grid, aspect_grid = compute_slope_aspect(Z, res)
 
             # 3. Fuel Layout
